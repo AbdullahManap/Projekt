@@ -38,7 +38,7 @@ if response.status_code == 200:
 
     ax.set_xlabel("Uhrzeit")
     ax.set_ylabel("Preis (ct/kWh)")
-    ax.set_title("Dynamische Strompreise (stundenweise)")
+    ax.set_title("Dynamische Strompreise")
     plt.xticks(rotation=90)  # damit die Stunden nicht überlappen
     plt.grid(axis="y", linestyle="--", alpha=0.7)
     plt.tight_layout()
