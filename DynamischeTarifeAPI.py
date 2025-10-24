@@ -31,6 +31,11 @@ if response.status_code == 200:
     for bar, price in zip(bars, prices):
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.2,
                 f"{price:.1f}", ha="center", va="center", fontsize=10, rotation=0)
+        
+
+    print(f"Anzahl Preise: {len(prices)}")
+    print(f"Von: {timestamps[0]} bis {timestamps[-1]}")
+
 
     # Achsenformat: jede Stunde anzeigen
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))  

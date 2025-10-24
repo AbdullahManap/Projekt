@@ -134,9 +134,10 @@ for line in RAW.strip().splitlines():
 df = pd.DataFrame(rows, columns=["start", "end", "value"])
 
 # Zeitindex für Plot
-base_date = datetime(2025, 1, 1)
-df["timestamp"] = pd.to_datetime(base_date.strftime("%Y-%m-%d") + " " + df["start"])
+base_date = datetime.now().date()  # heutiges Datum statt fix 1.1.2025
+df["timestamp"] = pd.to_datetime(df["start"].apply(lambda t: f"{base_date} {t}"))
 df = df.set_index("timestamp")
+
 
 # =========================
 # 4) Dynamisierung
@@ -144,15 +145,18 @@ df = df.set_index("timestamp")
 t = 1  # Kalendertag festlegen (1..365/366)
 df["final"] = dynamize_profile(df["value"], t)
 
+now = datetime.now()
+df_future = df[df.index >= now]
+
 # =========================
 # 5) Plot
 # =========================
 plt.figure(figsize=(12, 5))
-plt.plot(df.index, df["final"], label=f"Skaliert+dynamisiert (t={t})", linestyle="-")
-plt.title("Lastprofil – skaliert und dynamisiert")
+plt.plot(df_future.index, df_future["final"], label=f"ab {now.strftime('%H:%M')} Uhr", linestyle="-")
+plt.title("Lastprofil – ab aktueller Uhrzeit")
 plt.xlabel("Uhrzeit")
 plt.ylabel("kWh")
-ticks = pd.date_range(df.index.min(), df.index.max(), freq="2H")
+ticks = pd.date_range(df_future.index.min(), df_future.index.max(), freq="2H")
 plt.xticks(ticks, [ts.strftime("%H:%M") for ts in ticks])
 plt.legend()
 plt.tight_layout()
@@ -161,8 +165,5 @@ plt.show()
 # =========================
 # 6) Summen
 # =========================
-energy_orig = df["value"].sum()
-energy_final = df["final"].sum()
-
-print(f"Tagesenergie original: {energy_orig:,.3f} kWh")
-print(f"Tagessumme final:      {energy_final:,.3f} (nach Skalierung und Dynamisierung)")
+energy_future = df_future["final"].sum()
+print(f"Verbleibende Energie ab {now.strftime('%H:%M')} Uhr: {energy_future:,.3f} kWh")
