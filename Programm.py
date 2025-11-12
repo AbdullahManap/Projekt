@@ -112,9 +112,21 @@ Azimuth = st.sidebar.number_input(
 Neigungswinkel = st.sidebar.number_input(
     "Neigungswinkel (°)", min_value=0, max_value=90, step=1, value=30
 )
+use_storage = st.sidebar.checkbox("Speicher verwenden", value=True)
+
+if use_storage:
+    Speicherkapazität = st.sidebar.number_input(
+        "Speicherkapazität (kWh)", min_value=1, max_value=90, step=1, value=10
+    )
+else:
+    Speicherkapazität = 0
+
+use_pv = st.sidebar.checkbox("PV verwenden", value=True)
+
 
 print(Azimuth, Neigungswinkel)
 
+#Dynamische Strompreise
 
 @st.cache_data(ttl=15 * 60)  # 15 Minuten cachen
 def fetch_market_data():
@@ -123,10 +135,31 @@ def fetch_market_data():
     r.raise_for_status()
     data = r.json()
     timestamps, prices = [], []
+    
     for entry in data.get("data", []):
         timestamps.append(datetime.fromtimestamp(entry["start_timestamp"] / 1000))
-        prices.append(entry["marketprice"] * 0.1)  # €/MWh → ct/kWh
+        original_price = entry["marketprice"] * 0.1
+        end_price = (original_price * 1.2) / 0.4
+        prices.append(end_price)
+
+    target_len = 24
+    if len(prices) > target_len:
+        prices = prices[:target_len]
+        timestamps = timestamps[:target_len]
+
+    elif len(prices) < target_len:
+        missing = target_len - len(prices)
+        prices += [0] * missing
+        
+        if timestamps:
+            last_ts = timestamps[-1]
+        else:
+            last_ts = datetime.now().replace(minute=0, second=0, microsecond=0)
+        for i in range(missing):
+            timestamps.append(last_ts + timedelta(hours=i+1))
+
     return timestamps, prices
+
 
 try:
     timestamps, prices = fetch_market_data()
@@ -175,6 +208,7 @@ try:
 except requests.RequestException as e:
     st.error(f"Fehler beim Abrufen der Daten (awattar): {e}")
 
+
 #================ Ertragsrechnung PV-Vorhersage ================#
 
 #Datum und Standort
@@ -184,7 +218,7 @@ day_number = dt.timetuple().tm_yday
 lat = 51.0267
 lon = 7.5693
 #Zeit
-Zeitzone = 2.0
+Zeitzone = 1.0
 Zeit = datetime.now().time()
 Zeitvoll = Zeit.replace(minute = 0, second = 0, microsecond = 0)
 LokaleZeit = Zeitvoll.strftime("%H:%M")
@@ -203,30 +237,50 @@ interval = "1h"
 
 values_direkt, values_diff, values_reflekt, ZeitT, values_global, values_Ertrag = [], [], [], [], [], []
 
-timestamps, dni_values, dhi_values = [], [], []
-now = datetime.now()
-now = now.replace(minute=0, second=0, microsecond=0)
 
-for d in range(2):  # heute + morgen
-    date = (now + timedelta(days=d)).strftime("%Y-%m-%d")
-    url = f"https://api.openweathermap.org/energy/2.0/solar/interval_data?lat={current_lat}&lon={current_lon}&date={date}&interval={interval}&appid={API_key}"
-    response = requests.get(url)
-    if response.status_code != 200:
-        continue
+# --- CSV einlesen ---
+df = pd.read_csv("solar_data.csv", header=None, names=["timestamp", "dni", "dhi"])
+df = df.replace("NaN", pd.NA)
 
-    for i in response.json().get("intervals", []):
-        start = datetime.strptime(f"{date} {i['start']}", "%Y-%m-%d %H:%M")
-        if d > 0 or start >= now:  # ab jetzt oder morgen
-            timestamps.append(start.isoformat(timespec="minutes"))
-            dni_values.append(i["irradiation"]["cloudy_sky"]["dni"])
-            dhi_values.append(i["irradiation"]["cloudy_sky"]["dhi"])
-        if len(timestamps) >= 24:
-            break
-    if len(timestamps) >= 24:
-        break
+# Datentypen setzen
+df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y-%m-%dT%H:%M")
+df["dni"] = pd.to_numeric(df["dni"], errors="coerce").fillna(0.0)
+df["dhi"] = pd.to_numeric(df["dhi"], errors="coerce").fillna(0.0)
 
-#print(f"{len(timestamps)} Zeitpunkte gespeichert ab aktueller Uhrzeit:")
-#print(timestamps)
+# Sicherheit: sortieren (falls die CSV mal nicht strikt aufsteigend ist)
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+# --- Nur Uhrzeit betrachten ---
+df["time"] = df["timestamp"].dt.time   # z.B. 15:00:00
+
+now = datetime.now().replace(second=0, microsecond=0)
+now_time = now.time().replace(minute=0)  # auf volle Stunde runden (falls gewünscht)
+# Wenn du NICHT runden willst, nimm: now_time = now.time()
+
+print(f"Aktuelle Uhrzeit (nur Time-of-Day): {now_time}")
+
+# 1) Versuche: den ersten Eintrag mit time >= now_time finden (am gleichen "Tagesprofil")
+mask = df["time"] >= now_time
+if mask.any():
+    start_index = mask.idxmax()  # Index des ersten True
+else:
+    # 2) Falls es später am Tag keine Zeit mehr gibt, am Dateianfang starten
+    start_index = 0
+
+# --- 24 Werte in Datei-Reihenfolge mit Wrap-around ---
+n = len(df)
+indices = [(start_index + i) % n for i in range(24)]
+subset = df.iloc[indices].copy()
+
+# Ausgabe-Listen (nur Anzeige; intern bleibst du bei echten Zeiten)
+timestamps = subset["time"].astype(str).str.slice(0,5).tolist()  # "HH:MM"
+dni_values = subset["dni"].tolist()
+dhi_values = subset["dhi"].tolist()
+
+print(f"Start an CSV-Position {start_index} mit Uhrzeit: {timestamps[0]}")
+print("24 Stunden (wrap über Dateiende, Datum ignoriert):\n")
+for t, dni, dhi in zip(timestamps, dni_values, dhi_values):
+    print(f"{t}  DNI={dni:.1f}  DHI={dhi:.1f}")
 
 
 def Jahreswinkel(Tag,TagJahr):
@@ -249,7 +303,9 @@ def Zeitgleichung(J_deg):
 def MittlereOrtszeit(LZ,Zeitzone,Langitude):
     zeit = datetime.strptime(LZ, "%H:%M")
     LZ_dezimal = zeit.hour + (zeit.minute / 60)
+    print("LokaltZeit: ", LZ_dezimal)
     MOZ = LZ_dezimal - Zeitzone + ((4*Langitude)/60) 
+    print(MOZ)
     return (MOZ)
 
 def WahreOrtszeit(MOZ,Zeitgleichung):
@@ -324,6 +380,7 @@ def PV_ErtragIdeal(Globalstrahlunhg, Nennleistung):
 
 Jahreswinkel_Wert = Jahreswinkel(day_number,365)
 print("Jahreswinkel: ",Jahreswinkel_Wert)
+print(day_number)
 
 Sonnendeklination_Wert = Sonnendeklination(Jahreswinkel_Wert)
 print("Sonnendeklination: ",Sonnendeklination_Wert)
@@ -339,22 +396,35 @@ for i in range(24):
 
     MittlereOrtszeit_Wert = MittlereOrtszeit(LokaleZeit,Zeitzone,current_lon)
     MOZecht = dezimal_zu_zeit(MittlereOrtszeit_Wert)
+    print("MittlereOrtszeit: ",MittlereOrtszeit_Wert)
 
     WahreOrtszeit_Wert = WahreOrtszeit(MittlereOrtszeit_Wert,Zeitgleichung_Wert)
+    print("WahreOrtszeit: ",WahreOrtszeit_Wert)
 
     Stundenwinkel_Wert = Stundenwinkel(WahreOrtszeit_Wert)
+    print("Stundenwinkel: ",Stundenwinkel_Wert)
 
     Sonnenhöhe_Wert = Sonnenhöhe(current_lat,Sonnendeklination_Wert,Stundenwinkel_Wert)
+    print("Sonnenhöhe: ",Sonnenhöhe_Wert)
 
     Sonnenazimut_Wert = Sonnenazimut(current_lat,Sonnendeklination_Wert,Sonnenhöhe_Wert,WahreOrtszeit_Wert)
+    print("Sonnenazimut: ", Sonnenazimut_Wert)
 
     Einfallswinkel_Wert = Einfallswinkel(Sonnenhöhe_Wert,Sonnenazimut_Wert,Azimuth,Neigungswinkel)
+    print("Einfallswinke: ",Einfallswinkel_Wert)
+
 
     DirekteEinstrahlung_Wert = DirekteEinstrahlung(dni_values[i],Einfallswinkel_Wert,Sonnenhöhe_Wert)
+    print("DirekteStrahlung: ",dni_values[i])
+    if(DirekteEinstrahlung_Wert < 0):
+        DirekteEinstrahlung_Wert = 0
     values_direkt.append(DirekteEinstrahlung_Wert)
+    print("DirektEintrahlungHOR: ", DirekteEinstrahlung_Wert)
 
     DiffuseEinstrahlung_Wert = DiffuseEinstrahlung(dhi_values[i],Neigungswinkel)
+    print("DiffuseStrahlung: ", dhi_values[i])
     values_diff.append(DiffuseEinstrahlung_Wert)
+    print("DiffuseeinstrahlungHOR: ", DiffuseEinstrahlung_Wert)
 
     ReflektierteEinstrahlung_Wert = ReflektierteEinstrahlung(dni_values[i],dhi_values[i],Neigungswinkel,Albedo)
     values_reflekt.append(ReflektierteEinstrahlung_Wert)
@@ -405,10 +475,7 @@ RAW = """
 23:00-00:00	102,804
 """
 
-
-# =========================
-# 2) BDEW-Dynamisierung
-# =========================
+# BDEW-Dynamisierung
 def bdew_factor(t: int) -> float:
     """Berechnet den Dynamisierungsfaktor P(t) für Kalendertag t (1..365/366)."""
     return (
@@ -421,12 +488,10 @@ def bdew_factor(t: int) -> float:
 
 def dynamize_profile(series: pd.Series, t: int) -> pd.Series:
     """Erst skalieren (/1e6 * 3500), dann dynamisieren."""
-    scaled = series / 1_000_000 * 3500
+    scaled = series / 1_000_000 * 4000
     return scaled * bdew_factor(t)
 
-# =========================
-# 3) Parsing Rohdaten
-# =========================
+
 rows = []
 for line in RAW.strip().splitlines():
     times, v = line.split('\t')
@@ -441,15 +506,12 @@ base_date = datetime.now().date()
 df["timestamp"] = pd.to_datetime(df["start"].apply(lambda t: f"{base_date} {t}"))
 df = df.set_index("timestamp")
 
-# =========================
-# 4) Dynamisierung
-# =========================
+
+# Dynamisierung
 t = day_number  # Kalendertag festlegen (1..365/366)
 df["final"] = dynamize_profile(df["value"], t)
 
-# =========================
-# 5) Ab jetzt + Rest anhängen
-# =========================
+
 now = datetime.now()
 now_rounded = now.replace(minute=0, second=0, microsecond=0)
 df_future = df[df.index >= now_rounded]
@@ -461,10 +523,6 @@ df_past.index = df_past.index + timedelta(days=1)
 # Kombinieren
 df_combined = pd.concat([df_future, df_past])
 
-
-# Annahme: df_combined["final"] = Verbrauch in kWh
-# values_Ertrag = PV-Erzeugung in kWh (gleiche Länge, 24h ab jetzt)
-# prices = aWATTar Preise (gleiche Länge, 24h ab jetzt)
 df_energy = pd.DataFrame({
     "Zeit": ZeitT,
     "PV": values_Ertrag[:len(ZeitT)],
@@ -472,10 +530,13 @@ df_energy = pd.DataFrame({
     "Preis_ct": prices[:len(ZeitT)]
 })
 
-df_energy["Überschuss"] = df_energy["PV"] - df_energy["Verbrauch"]
+if use_pv:
+    df_energy["Überschuss"] = df_energy["PV"] - df_energy["Verbrauch"]
+else:
+    df_energy["Überschuss"] = df_energy["Verbrauch"]
 
 
-speicher_kapazitaet = 10.0  # kWh
+speicher_kapazitaet = Speicherkapazität  # kWh
 speicher_ladung = 0      
 speicher = []
 entscheidungen = []
@@ -489,65 +550,87 @@ for _, row in df_energy.iterrows():
     ueberschuss = row["Überschuss"]
     preis = row["Preis_ct"]
     Zeit = row["Zeit"]
+    
+    stunde = int(row["Zeit"].split(":")[0])
+    entscheidung = ""
 
-    if ueberschuss > 0 and preis > 0:
-        # Überschuss vorhanden
-        if speicher_ladung < speicher_kapazitaet:
-            # Strom speichern
-            speicherbare_menge = min(ueberschuss, speicher_kapazitaet - speicher_ladung)
-            speicher_ladung += speicherbare_menge
-            if ueberschuss > speicherbare_menge:
-                einspeisung += ueberschuss - speicherbare_menge
-                entscheidung += f"Einpeisen ins Netz ({einspeisung:.2f} kWh)"
-                einspeiseEinkommen += einspeisung * einspeiseVergütung
-            entscheidung = f"Speichern ({speicherbare_menge:.2f} kWh)"
+    if use_storage and use_pv:
+        if ueberschuss > 0:
+            if speicher_ladung < speicher_kapazitaet:
+                # Strom speichern
+                speicherbare_menge = min(ueberschuss, speicher_kapazitaet - speicher_ladung)
+                speicher_ladung += speicherbare_menge
+                entscheidung = f"Speichern ({speicherbare_menge:.2f} kWh)"
+                if ueberschuss > speicherbare_menge:
+                    rest_ueberschuss = ueberschuss - speicherbare_menge
+                    einspeiseEinkommen += rest_ueberschuss * einspeiseVergütung
+                    einspeisung += rest_ueberschuss
+                    entscheidung += f"Einpeisen ins Netz ({einspeisung:.2f} kWh)"
+            else:
+                entscheidung = "Einspeisen ins Netz"
+                einspeiseEinkommen += ueberschuss * einspeiseVergütung
+                einspeisung += ueberschuss
 
-        else:
+        elif ueberschuss < 0:  
+            if speicher_ladung > 0 and (stunde >= 20 or stunde < 6):
+                # Speicher entladen erst zwiscgen 20 und 6 Uhr
+                entnehmbare_menge = min(-ueberschuss, speicher_ladung)
+                speicher_ladung -= entnehmbare_menge
+                entscheidung = f"Entladen ({entnehmbare_menge:.2f} kWh)"
+                # wenn nicht genug aus der Speicher entnommen werden kann, rest kaufen
+                rest_bedarf = (-ueberschuss) -  entnehmbare_menge
+                if rest_bedarf > 0:
+                    gesamtKosten += rest_bedarf * preis
+            else:
+                # Speicher leer Strom kaufen
+                entscheidung = "Netzbezug"
+                gesamtKosten += -ueberschuss * preis
+    elif use_pv and not use_storage:
+        if ueberschuss > 0:
             entscheidung = "Einspeisen ins Netz"
             einspeiseEinkommen += ueberschuss * einspeiseVergütung
-    elif ueberschuss < 0 and preis < 0:
-        entscheidung = "Netzbezug"
-        gesamtKosten += -ueberschuss * preis   
-    else:
-        stunde = int(row["Zeit"].split(":")[0])
-        if speicher_ladung > 0 and (stunde >= 20 or stunde < 6):
-            # Speicher entladen
-            entnehmbare_menge = min(-ueberschuss, speicher_ladung)
-            speicher_ladung -= entnehmbare_menge
-            entscheidung = f"Entladen ({entnehmbare_menge:.2f} kWh)"
+            einspeisung += ueberschuss
         else:
             entscheidung = "Netzbezug"
-            gesamtKosten += abs(ueberschuss * preis)
-
-            
-
+            gesamtKosten += -ueberschuss * preis
+    elif not use_pv and not use_storage:
+        entscheidung = "Netzbezug"
+        gesamtKosten += ueberschuss * preis
     speicher.append(speicher_ladung)
     entscheidungen.append(entscheidung)
+
 
 fig3, ax = plt.subplots(figsize=(14, 8))
 
 # Hauptachsen: PV-Ertrag und Verbrauch
 ax.plot(ZeitT, df_combined["final"], label="Lastprofil", linestyle="-", drawstyle="steps-post")
-ax.plot(ZeitT, values_Ertrag, linestyle='-', color="blue", label="PV-Ertrag", drawstyle="steps-post")
+if use_pv:
+    ax.plot(ZeitT, values_Ertrag, linestyle='-', color="blue", label="PV-Ertrag", drawstyle="steps-post")
 
-# Zweite y-Achse für Speicherstand
-ax2 = ax.twinx()
-ax2.plot(ZeitT, speicher, color="green", linestyle="--", linewidth=2, label="Speicherinhalt (kWh)")
-
-# Achsentitel und Legenden
-ax.set_title("PV-Ertrag, Verbrauch und Speicherstand")
 ax.set_xlabel("Zeit")
 ax.set_ylabel("Leistung [kWh]")
-ax2.set_ylabel("Speicherinhalt [kWh]")
 
-# Gitter & Layout
+# Speicher nur anzeigen, wenn aktiviert
+if use_storage:
+    ax2 = ax.twinx()
+    ax2.plot(ZeitT, speicher, color="green", linestyle="--", linewidth=2, label="Speicherinhalt (kWh)")
+    ax2.set_ylabel("Speicherinhalt [kWh]")
+    title = "PV-Ertrag, Verbrauch und Speicherstand"
+
+    # Legenden kombinieren
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines + lines2, labels + labels2, loc="upper left")
+
+else:
+    title = "PV-Ertrag und Verbrauch"
+    ax.legend(loc="upper left")
+
+if not use_pv and not use_storage:
+        title= "Verbrauch"
+
+ax.set_title(title)
 ax.grid(True)
-
-# Legenden kombinieren
-lines, labels = ax.get_legend_handles_labels()
-lines2, labels2 = ax2.get_legend_handles_labels()
-ax.legend(lines + lines2, labels + labels2, loc="upper left")
-
 plt.tight_layout()
 st.pyplot(fig3)
 
@@ -564,6 +647,6 @@ with col2:
 
 
 
-#st.write("Gesamtkosten:", gesamtKosten)
+st.write("Gesamtkosten:", round(gesamtKosten/100,2),"€")
 
 

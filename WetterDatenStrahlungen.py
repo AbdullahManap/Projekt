@@ -27,7 +27,8 @@ if response.status_code == 200:
     print("Beispielausgabe:")
     for t, dni, dhi in zip(timestamps[:24], dni_values[:24], dhi_values[:24]):
         print(f"{t} → DNI_cloudy: {dni:.2f}, DHI_cloudy: {dhi:.2f}")
-
+else:
+    print("Fehler")
 
 jetzt = datetime.now().date()
 dt = datetime.strptime(str(jetzt), "%Y-%m-%d")
