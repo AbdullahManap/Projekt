@@ -122,6 +122,8 @@ else:
     Speicherkapazität = 0
 
 use_pv = st.sidebar.checkbox("PV verwenden", value=True)
+use_Echarging = st.sidebar.checkbox("E-Ladestation", value=False)
+use_washing = st.sidebar.checkbox("Waschmaschine", value=False)
 
 
 print(Azimuth, Neigungswinkel)
@@ -201,9 +203,22 @@ try:
 
     st.pyplot(fig, clear_figure=True)
 
-    col1, col2, col3 = st.columns(3)
-    col2.metric("Minimum (ct/kWh)", f"{min(prices):.2f}".replace(".", ","))
-    col3.metric("Maximum (ct/kWh)", f"{max(prices):.2f}".replace(".", ","))
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown(
+            f"<h4 style='text-align: center;'>Minimum (ct/kWh)</h4>"
+            f"<h2 style='text-align: center;'>{min(prices):.2f} €</h2>",
+            unsafe_allow_html=True,
+        )
+
+    with col2:
+        st.markdown(
+            f"<h4 style='text-align: center;'>Maximum (ct/kWh)</h4>"
+            f"<h2 style='text-align: center;'>{max(prices):.2f} €</h2>",
+            unsafe_allow_html=True,
+        )
 
 except requests.RequestException as e:
     st.error(f"Fehler beim Abrufen der Daten (awattar): {e}")
@@ -231,48 +246,31 @@ zeitindezimal = round(zeitstunden + (zeitminuten / 60),2)
 #Neigungswinkel = 30
 Albedo = 0.2
 
-#API Abfrage
-API_key = "c154d26cd7087c7ef48de252fe2d6b03"
-interval = "1h"
-
 values_direkt, values_diff, values_reflekt, ZeitT, values_global, values_Ertrag = [], [], [], [], [], []
 
-
-# --- CSV einlesen ---
-df = pd.read_csv("solar_data.csv", header=None, names=["timestamp", "dni", "dhi"])
+#Daten einlesen
+df = pd.read_csv("dataBestrahlung.csv", header=None, names=["timestamp", "dni", "dhi"])
 df = df.replace("NaN", pd.NA)
-
-# Datentypen setzen
 df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y-%m-%dT%H:%M")
 df["dni"] = pd.to_numeric(df["dni"], errors="coerce").fillna(0.0)
 df["dhi"] = pd.to_numeric(df["dhi"], errors="coerce").fillna(0.0)
-
-# Sicherheit: sortieren (falls die CSV mal nicht strikt aufsteigend ist)
 df = df.sort_values("timestamp").reset_index(drop=True)
-
-# --- Nur Uhrzeit betrachten ---
-df["time"] = df["timestamp"].dt.time   # z.B. 15:00:00
+df["time"] = df["timestamp"].dt.time  
 
 now = datetime.now().replace(second=0, microsecond=0)
-now_time = now.time().replace(minute=0)  # auf volle Stunde runden (falls gewünscht)
-# Wenn du NICHT runden willst, nimm: now_time = now.time()
+now_time = now.time().replace(minute=0)  
 
 print(f"Aktuelle Uhrzeit (nur Time-of-Day): {now_time}")
-
-# 1) Versuche: den ersten Eintrag mit time >= now_time finden (am gleichen "Tagesprofil")
 mask = df["time"] >= now_time
 if mask.any():
-    start_index = mask.idxmax()  # Index des ersten True
+    start_index = mask.idxmax() 
 else:
-    # 2) Falls es später am Tag keine Zeit mehr gibt, am Dateianfang starten
     start_index = 0
 
-# --- 24 Werte in Datei-Reihenfolge mit Wrap-around ---
 n = len(df)
 indices = [(start_index + i) % n for i in range(24)]
 subset = df.iloc[indices].copy()
 
-# Ausgabe-Listen (nur Anzeige; intern bleibst du bei echten Zeiten)
 timestamps = subset["time"].astype(str).str.slice(0,5).tolist()  # "HH:MM"
 dni_values = subset["dni"].tolist()
 dhi_values = subset["dhi"].tolist()
@@ -501,7 +499,6 @@ for line in RAW.strip().splitlines():
 
 df = pd.DataFrame(rows, columns=["start", "end", "value"])
 
-# Zeitindex für Plot
 base_date = datetime.now().date()
 df["timestamp"] = pd.to_datetime(df["start"].apply(lambda t: f"{base_date} {t}"))
 df = df.set_index("timestamp")
@@ -510,6 +507,7 @@ df = df.set_index("timestamp")
 # Dynamisierung
 t = day_number  # Kalendertag festlegen (1..365/366)
 df["final"] = dynamize_profile(df["value"], t)
+
 
 
 now = datetime.now()
@@ -522,6 +520,26 @@ df_past.index = df_past.index + timedelta(days=1)
 
 # Kombinieren
 df_combined = pd.concat([df_future, df_past])
+
+if use_Echarging:
+    mask = (df_combined.index.hour >= 18) & (df_combined.index.hour < 21)
+    df_combined.loc[mask, "final"] += 11
+if use_washing:
+    mask = (df_combined.index.hour >= 7) & (df_combined.index.hour < 9)
+    df_combined.loc[mask, "final"] += 2
+
+
+######Last verschieben#######
+günstigste_zeiten = sorted(range(len(prices)), key=lambda i: prices[i])[:3]
+print(günstigste_zeiten)
+if use_Echarging:
+    mask = (df_combined.index.hour >= 18) & (df_combined.index.hour < 21)
+    df_combined.loc[mask, "final"] -= 11
+    df_combined.iloc[günstigste_zeiten, df_combined.columns.get_loc("final")] += 11
+
+############################
+
+
 
 df_energy = pd.DataFrame({
     "Zeit": ZeitT,
@@ -536,11 +554,11 @@ else:
     df_energy["Überschuss"] = df_energy["Verbrauch"]
 
 
-speicher_kapazitaet = Speicherkapazität  # kWh
+speicher_kapazitaet = Speicherkapazität 
 speicher_ladung = 0      
 speicher = []
 entscheidungen = []
-einspeiseVergütung = 8  # ct/kWh
+einspeiseVergütung = 0.08  # €/kWh
 einspeisung = 0
 einspeiseEinkommen = 0
 gesamtKosten = 0
@@ -571,14 +589,18 @@ for _, row in df_energy.iterrows():
                 einspeiseEinkommen += ueberschuss * einspeiseVergütung
                 einspeisung += ueberschuss
 
+
         elif ueberschuss < 0:  
             if speicher_ladung > 0 and (stunde >= 20 or stunde < 6):
-                # Speicher entladen erst zwiscgen 20 und 6 Uhr
+                # Speicher entladen erst zwischen 20 und 6 Uhr
                 entnehmbare_menge = min(-ueberschuss, speicher_ladung)
                 speicher_ladung -= entnehmbare_menge
-                entscheidung = f"Entladen ({entnehmbare_menge:.2f} kWh)"
                 # wenn nicht genug aus der Speicher entnommen werden kann, rest kaufen
                 rest_bedarf = (-ueberschuss) -  entnehmbare_menge
+                if(rest_bedarf > 0):
+                    entscheidung = f"Entladen ({entnehmbare_menge:.2f} kWh), Netzbezug({rest_bedarf:.2f} kWh) "
+                else:
+                    entscheidung = f"Entladen ({entnehmbare_menge:.2f} kWh)"
                 if rest_bedarf > 0:
                     gesamtKosten += rest_bedarf * preis
             else:
@@ -603,7 +625,7 @@ for _, row in df_energy.iterrows():
 fig3, ax = plt.subplots(figsize=(14, 8))
 
 # Hauptachsen: PV-Ertrag und Verbrauch
-ax.plot(ZeitT, df_combined["final"], label="Lastprofil", linestyle="-", drawstyle="steps-post")
+ax.plot(ZeitT, df_energy["Verbrauch"], label="Lastprofil", linestyle="-", drawstyle="steps-post")
 if use_pv:
     ax.plot(ZeitT, values_Ertrag, linestyle='-', color="blue", label="PV-Ertrag", drawstyle="steps-post")
 
@@ -613,7 +635,7 @@ ax.set_ylabel("Leistung [kWh]")
 # Speicher nur anzeigen, wenn aktiviert
 if use_storage:
     ax2 = ax.twinx()
-    ax2.plot(ZeitT, speicher, color="green", linestyle="--", linewidth=2, label="Speicherinhalt (kWh)")
+    ax2.plot(ZeitT, speicher, color="green", linestyle="--", linewidth=2, label="Speicherinhalt")
     ax2.set_ylabel("Speicherinhalt [kWh]")
     title = "PV-Ertrag, Verbrauch und Speicherstand"
 
@@ -645,8 +667,33 @@ with col2:
         use_container_width=True
     )
 
+Kosten = round(gesamtKosten/100,2) - round(einspeiseEinkommen,2)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.markdown(
+        f"<h4 style='text-align: center;'>Gesamtkosten</h4>"
+        f"<h2 style='text-align: center;'>{round(Kosten,2)} €</h2>",
+        unsafe_allow_html=True,
+    )
+
+with col2:
+    st.markdown(
+        f"<h4 style='text-align: center;'>Einspeiseinahmen</h4>"
+        f"<h2 style='text-align: center;'>{round(einspeiseEinkommen,2)} €</h2>",
+        unsafe_allow_html=True,
+    )
+
+with col3:
+    st.markdown(
+        f"<h4 style='text-align: center;'>Einspeisung</h4>"
+        f"<h2 style='text-align: center;'>{round(einspeisung,2)} kWh</h2>",
+        unsafe_allow_html=True,
+    )
 
 
-st.write("Gesamtkosten:", round(gesamtKosten/100,2),"€")
+
+
 
 
