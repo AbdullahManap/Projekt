@@ -123,7 +123,7 @@ else:
 
 use_pv = st.sidebar.checkbox("PV verwenden", value=True)
 use_Echarging = st.sidebar.checkbox("E-Ladestation", value=False)
-use_washing = st.sidebar.checkbox("Waschmaschine", value=False)
+
 
 
 print(Azimuth, Neigungswinkel)
@@ -275,10 +275,9 @@ timestamps = subset["time"].astype(str).str.slice(0,5).tolist()  # "HH:MM"
 dni_values = subset["dni"].tolist()
 dhi_values = subset["dhi"].tolist()
 
-print(f"Start an CSV-Position {start_index} mit Uhrzeit: {timestamps[0]}")
-print("24 Stunden (wrap über Dateiende, Datum ignoriert):\n")
-for t, dni, dhi in zip(timestamps, dni_values, dhi_values):
-    print(f"{t}  DNI={dni:.1f}  DHI={dhi:.1f}")
+
+#for t, dni, dhi in zip(timestamps, dni_values, dhi_values):
+#    print(f"{t}  DNI={dni:.1f}  DHI={dhi:.1f}")
 
 
 def Jahreswinkel(Tag,TagJahr):
@@ -301,7 +300,7 @@ def Zeitgleichung(J_deg):
 def MittlereOrtszeit(LZ,Zeitzone,Langitude):
     zeit = datetime.strptime(LZ, "%H:%M")
     LZ_dezimal = zeit.hour + (zeit.minute / 60)
-    print("LokaltZeit: ", LZ_dezimal)
+    #print("LokaltZeit: ", LZ_dezimal)
     MOZ = LZ_dezimal - Zeitzone + ((4*Langitude)/60) 
     print(MOZ)
     return (MOZ)
@@ -377,14 +376,11 @@ def PV_ErtragIdeal(Globalstrahlunhg, Nennleistung):
 
 
 Jahreswinkel_Wert = Jahreswinkel(day_number,365)
-print("Jahreswinkel: ",Jahreswinkel_Wert)
 print(day_number)
 
 Sonnendeklination_Wert = Sonnendeklination(Jahreswinkel_Wert)
-print("Sonnendeklination: ",Sonnendeklination_Wert)
-
 Zeitgleichung_Wert = Zeitgleichung(Jahreswinkel_Wert)
-print("Zeitgleichung: ",Zeitgleichung_Wert)
+
 
 
 start = datetime.now().replace(minute=0, second=0, microsecond=0)
@@ -394,35 +390,34 @@ for i in range(24):
 
     MittlereOrtszeit_Wert = MittlereOrtszeit(LokaleZeit,Zeitzone,current_lon)
     MOZecht = dezimal_zu_zeit(MittlereOrtszeit_Wert)
-    print("MittlereOrtszeit: ",MittlereOrtszeit_Wert)
+
 
     WahreOrtszeit_Wert = WahreOrtszeit(MittlereOrtszeit_Wert,Zeitgleichung_Wert)
-    print("WahreOrtszeit: ",WahreOrtszeit_Wert)
+
 
     Stundenwinkel_Wert = Stundenwinkel(WahreOrtszeit_Wert)
-    print("Stundenwinkel: ",Stundenwinkel_Wert)
+
 
     Sonnenhöhe_Wert = Sonnenhöhe(current_lat,Sonnendeklination_Wert,Stundenwinkel_Wert)
-    print("Sonnenhöhe: ",Sonnenhöhe_Wert)
+
 
     Sonnenazimut_Wert = Sonnenazimut(current_lat,Sonnendeklination_Wert,Sonnenhöhe_Wert,WahreOrtszeit_Wert)
-    print("Sonnenazimut: ", Sonnenazimut_Wert)
+
 
     Einfallswinkel_Wert = Einfallswinkel(Sonnenhöhe_Wert,Sonnenazimut_Wert,Azimuth,Neigungswinkel)
-    print("Einfallswinke: ",Einfallswinkel_Wert)
+
 
 
     DirekteEinstrahlung_Wert = DirekteEinstrahlung(dni_values[i],Einfallswinkel_Wert,Sonnenhöhe_Wert)
-    print("DirekteStrahlung: ",dni_values[i])
+    
     if(DirekteEinstrahlung_Wert < 0):
         DirekteEinstrahlung_Wert = 0
     values_direkt.append(DirekteEinstrahlung_Wert)
-    print("DirektEintrahlungHOR: ", DirekteEinstrahlung_Wert)
+    
 
     DiffuseEinstrahlung_Wert = DiffuseEinstrahlung(dhi_values[i],Neigungswinkel)
-    print("DiffuseStrahlung: ", dhi_values[i])
     values_diff.append(DiffuseEinstrahlung_Wert)
-    print("DiffuseeinstrahlungHOR: ", DiffuseEinstrahlung_Wert)
+    
 
     ReflektierteEinstrahlung_Wert = ReflektierteEinstrahlung(dni_values[i],dhi_values[i],Neigungswinkel,Albedo)
     values_reflekt.append(ReflektierteEinstrahlung_Wert)
@@ -439,7 +434,7 @@ for i in range(24):
 for i in range(len(values_global)):
     Ertrag = PV_ErtragIdeal(values_global[i], Nennleistung)
     values_Ertrag.append(Ertrag/1000)  # in kWh
-    print(f"PV-Ertrag um {ZeitT[i]}: {Ertrag:.2f} Wh")
+    #print(f"PV-Ertrag um {ZeitT[i]}: {Ertrag:.2f} Wh")
 
 
 
@@ -524,14 +519,11 @@ df_combined = pd.concat([df_future, df_past])
 if use_Echarging:
     mask = (df_combined.index.hour >= 18) & (df_combined.index.hour < 21)
     df_combined.loc[mask, "final"] += 11
-if use_washing:
-    mask = (df_combined.index.hour >= 7) & (df_combined.index.hour < 9)
-    df_combined.loc[mask, "final"] += 2
+
 
 
 ######Last verschieben#######
 günstigste_zeiten = sorted(range(len(prices)), key=lambda i: prices[i])[:3]
-print(günstigste_zeiten)
 if use_Echarging:
     mask = (df_combined.index.hour >= 18) & (df_combined.index.hour < 21)
     df_combined.loc[mask, "final"] -= 11
